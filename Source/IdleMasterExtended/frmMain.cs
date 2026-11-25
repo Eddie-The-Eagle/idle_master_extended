@@ -491,6 +491,7 @@ namespace IdleMasterExtended
 
         // Identifies the currently active fast mode loop; a newer loop (skip/resume) invalidates older ones
         private int fastModeLoopId = 0;
+        private const int FastModeSecondsPerGame = 10;
 
         /// <summary>
         /// FAST MODE: Continuously loop through ALL games with remaining cards, idling each one
@@ -508,13 +509,20 @@ namespace IdleMasterExtended
                         return;
 
                     StartSoloIdle(badge);               // Idle current game
-                    TimeLeft = 5;                       // Set the timer to 5 sec
+                    tmrCardDropCheck.Stop();            // The loop drives timing itself; keep the drop-check timer from interfering
+                    toolStripStatusLabel1.Visible = lblTimer.Visible = true;
                     UpdateStateInfo();                  // Update information labels
-                    await Task.Delay(5 * 1000);         // Wait 5 sec
 
-                    // Skipped/restarted (newer loop) or paused (card drop timer stopped): end this loop
-                    if (loopId != fastModeLoopId || !tmrCardDropCheck.Enabled)
-                        return;
+                    // Per-game countdown
+                    for (int left = FastModeSecondsPerGame; left > 0; left--)
+                    {
+                        lblTimer.Text = TimeSpan.FromSeconds(left).ToString(@"mm\:ss");
+                        await Task.Delay(1000);
+
+                        // Skipped/resumed (newer loop) or paused (pause bumps the loop id): end this loop
+                        if (loopId != fastModeLoopId)
+                            return;
+                    }
 
                     StopIdle();                         // Stop idling before moving on to the next game
                 }
@@ -976,7 +984,7 @@ namespace IdleMasterExtended
             btnPause.Visible = true;
             pauseIdlingToolStripMenuItem.Enabled = true;
 
-            if (Settings.Default.fastMode || Settings.Default.IdlingModeWhitelist)
+            if (Settings.Default.IdlingModeWhitelist)
             {
                 btnSkip.Visible = false;
                 skipGameToolStripMenuItem.Enabled = false;
@@ -1013,6 +1021,9 @@ namespace IdleMasterExtended
         {
             if (!IsSteamReady)
                 return;
+
+            // Cancel any running fast mode loop
+            fastModeLoopId++;
 
             // Stop the steam-idle process
             StopIdle();
