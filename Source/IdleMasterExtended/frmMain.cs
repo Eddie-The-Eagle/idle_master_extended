@@ -306,7 +306,7 @@ namespace IdleMasterExtended
                             if (multi.Count() >= 2)
                             {
                                 if (Settings.Default.fastMode)
-                                    StartMultipleIdleFastMode();
+                                    _ = StartSoloIdleFastMode();
                                 else
                                     StartMultipleIdle();
                             }
@@ -489,55 +489,48 @@ namespace IdleMasterExtended
             Height = Convert.ToInt32(scale);
         }
 
-        /// <summary>
-        /// FAST MODE: Idle simultaneous for a short period
-        /// </summary>
-        private void StartMultipleIdleFastMode()
-        {
-            CurrentBadge = null;
-            StartMultipleIdle();
-            TimeLeft = 5 * 60;
-        }
+        // Identifies the currently active fast mode loop; a newer loop (skip/resume) invalidates older ones
+        private int fastModeLoopId = 0;
 
         /// <summary>
-        /// FAST MODE: Stop (simultaneous idling), wait, idle games individually, change back to simultaneous idling
+        /// FAST MODE: Continuously loop through ALL games with remaining cards, idling each one
+        /// individually for a few seconds. Badges are reloaded after every full pass.
         /// </summary>
         private async Task StartSoloIdleFastMode()
         {
-            bool paused = false;
-            
-            StopIdle();
+            int loopId = ++fastModeLoopId;
 
-            lblDrops.Text = localization.strings.loading_next;
-            lblDrops.Visible = picReadingPage.Visible = true;
-            lblIdle.Visible = false;
-
-            await Task.Delay(5 * 1000);
-            picReadingPage.Visible = false;
-            lblIdle.Visible = lblDrops.Visible = true;
-
-
-            foreach (var badge in (CanIdleBadges.Where(b => (!Equals(b, CurrentBadge)
-                                                            && CanIdleBadges.ToList().IndexOf(b) < MaxSimultanousCards))))
+            while (loopId == fastModeLoopId && Settings.Default.fastMode && CanIdleBadges.Any())
             {
-                StartSoloIdle(badge);               // Idle current game
-                TimeLeft = 5;                       // Set the timer to 5 sec
-                UpdateStateInfo();                  // Update information labels
-                await Task.Delay(TimeLeft * 1000);  // Wait 5 sec
-
-                if (!tmrCardDropCheck.Enabled)
+                foreach (var badge in CanIdleBadges.ToList())
                 {
-                    paused = true;                  // The pause button has been triggered
-                    break;                          // Breaks the loop to "pause" (cancel) idling
+                    if (loopId != fastModeLoopId)
+                        return;
+
+                    StartSoloIdle(badge);               // Idle current game
+                    TimeLeft = 5;                       // Set the timer to 5 sec
+                    UpdateStateInfo();                  // Update information labels
+                    await Task.Delay(5 * 1000);         // Wait 5 sec
+
+                    // Skipped/restarted (newer loop) or paused (card drop timer stopped): end this loop
+                    if (loopId != fastModeLoopId || !tmrCardDropCheck.Enabled)
+                        return;
+
+                    StopIdle();                         // Stop idling before moving on to the next game
                 }
 
-                StopIdle();                         // Stop idling before moving on to the next game
+                // Full pass done: reload badges so finished games drop out of the list
+                lblDrops.Visible = true;
+                lblDrops.Text = localization.strings.reading_badge_page + ", " + localization.strings.please_wait;
+                lblIdle.Visible = false;
+                picReadingPage.Visible = true;
+                await LoadBadgesAsync();
+                picReadingPage.Visible = false;
+                lblIdle.Visible = lblDrops.Visible = true;
             }
-            
-            if (!paused)
-            {
-                StartMultipleIdleFastMode();        // Start the simultaneous idling
-            }
+
+            if (loopId == fastModeLoopId && !CanIdleBadges.Any())
+                IdleComplete();
         }
 
         public void IdleComplete()
@@ -597,8 +590,7 @@ namespace IdleMasterExtended
             {
                 if (Settings.Default.fastMode)
                 {
-                    if (CanIdleBadges.Count(b => b.InIdle) <= MaxSimultanousCards)
-                        badge.Idle();
+                    badge.Idle();   // Fast mode: no cap on the number of games
                 }
                 else
                 {
@@ -1278,20 +1270,11 @@ namespace IdleMasterExtended
                     picReadingPage.Visible = true;
                     await LoadBadgesAsync();
 
-                    // If the fast mode is enabled, switch from simultaneous idling to individual idling
-                    if (Settings.Default.fastMode)
-                    {
-                        await StartSoloIdleFastMode();
-                        return;
-                    }
-                    else
-                    {
-                        UpdateIdleProcesses();
+                    UpdateIdleProcesses();
 
-                        isMultipleIdle = CanIdleBadges.Any(b => b.HoursPlayed < 2 && b.InIdle);
-                        if (isMultipleIdle)
-                            TimeLeft = 360;
-                    }
+                    isMultipleIdle = CanIdleBadges.Any(b => b.HoursPlayed < 2 && b.InIdle);
+                    if (isMultipleIdle)
+                        TimeLeft = 360;
                 }
 
                 // Check if user is authenticated and if any badge left to idle
